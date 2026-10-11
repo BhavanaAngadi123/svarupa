@@ -1,0 +1,44 @@
+/* Svarupa dark luminous theme — applied on production frontend builds.
+   The same palette is inlined in MainLayout so dev-mode rendering matches. */
+
+html {
+  --svarupa-bg: #0b0b18;
+  --svarupa-panel: #141428;
+  --svarupa-gold: #e8b64c;
+  --svarupa-text: #f2ecdf;
+  --svarupa-muted: #9a94b8;
+  --lumo-base-color: #0b0b18;
+  --lumo-body-text-color: #f2ecdf;
+  --lumo-header-text-color: #f2ecdf;
+  --lumo-secondary-text-color: #9a94b8;
+  --lumo-primary-color: #e8b64c;
+  --lumo-primary-text-color: #e8b64c;
+  --lumo-contrast-10pct: #1c1c34;
+}
+
+body {
+  background: radial-gradient(1200px 800px at 80% -10%, #1c1440 0%, #0b0b18 60%);
+  color: var(--svarupa-text);
+}
+
+vaadin-app-layout::part(navbar) {
+  background: rgba(11, 11, 24, 0.85);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid #2a2450;
+}
+
+vaadin-text-field::part(input-field),
+vaadin-password-field::part(input-field),
+vaadin-combo-box::part(input-field),
+vaadin-select::part(input-field) {
+  background: #0b0b18;
+  border: 1px solid #3a3468;
+  border-radius: 8px;
+  color: var(--svarupa-text);
+}
+
+vaadin-notification-card {
+  background: var(--svarupa-panel);
+  color: var(--svarupa-text);
+  border: 1px solid #2a2450;
+}

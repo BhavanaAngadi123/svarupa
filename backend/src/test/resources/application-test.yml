@@ -1,0 +1,22 @@
+# Test profile: H2 in-memory, Flyway runs the real migrations.
+spring:
+  datasource:
+    url: jdbc:h2:mem:svarupatest;DB_CLOSE_DELAY=-1;MODE=PostgreSQL
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+  jpa:
+    hibernate:
+      ddl-auto: validate
+  flyway:
+    enabled: true
+  ai:
+    ollama:
+      base-url: http://localhost:1
+
+svarupa:
+  jwt-secret: test-secret-that-is-long-enough-for-hmac-32b
+  stripe:
+    enabled: false
+  coach:
+    enabled: true

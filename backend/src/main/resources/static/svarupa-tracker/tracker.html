@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Svarupa Practice Tracker</title>
+<style>
+  :root { --bg:#0b0b18; --panel:#141428; --gold:#e8b64c; --text:#f2ecdf; --muted:#9a94b8; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+    font-family:system-ui,-apple-system,"Segoe UI",sans-serif; }
+  #wrap { display:flex; gap:1rem; padding:1rem; max-width:1200px; margin:0 auto; }
+  #stage { position:relative; flex:1 1 640px; min-width:0; }
+  #video, #overlay { width:100%; border-radius:12px; display:block; }
+  #overlay { position:absolute; inset:0; }
+  #side { flex:0 0 300px; display:flex; flex-direction:column; gap:0.75rem; }
+  .card { background:var(--panel); border:1px solid #2a2450; border-radius:12px; padding:1rem; }
+  #score { font-size:3rem; font-weight:700; color:var(--gold); text-align:center; margin:0; }
+  #scoreLabel { text-align:center; color:var(--muted); font-size:0.8rem; margin:0 0 0.5rem; }
+  select, button { width:100%; padding:0.6rem; border-radius:8px; border:1px solid #3a3468;
+    background:#0b0b18; color:var(--text); font-size:0.9rem; }
+  button.primary { background:linear-gradient(135deg,#e8b64c,#c98a2b); color:#1a1206;
+    border:none; font-weight:700; cursor:pointer; }
+  button:disabled { opacity:0.45; cursor:default; }
+  #angles { font-size:0.75rem; color:var(--muted); line-height:1.7; }
+  #angles b { color:var(--text); font-weight:600; }
+  .joint-ok { color:#7ddf9a; } .joint-warn { color:#e8b64c; } .joint-bad { color:#e06c6c; }
+  #status { font-size:0.85rem; color:var(--muted); min-height:1.2em; }
+  #timer { font-size:1.4rem; text-align:center; color:var(--text); }
+  @media (max-width:800px){ #wrap{flex-direction:column;} #side{flex:1;} }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="stage">
+    <video id="video" playsinline muted></video>
+    <canvas id="overlay"></canvas>
+  </div>
+  <div id="side">
+    <div class="card">
+      <div id="status">Loading pose engine…</div>
+      <div id="timer">0:00</div>
+      <p id="score">–</p>
+      <p id="scoreLabel">match vs reference</p>
+    </div>
+    <div class="card">
+      <label for="refSel" style="font-size:.8rem;color:var(--muted)">Reference step</label>
+      <select id="refSel"><option value="">Loading library…</option></select>
+      <div style="height:.5rem"></div>
+      <button id="camBtn" class="primary">Enable camera</button>
+      <div style="height:.5rem"></div>
+      <button id="saveBtn" disabled>Finish &amp; save session</button>
+    </div>
+    <div class="card"><div id="angles">Joint angles appear once tracking starts.</div></div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+<script>
+(function(){
+  "use strict";
+  var ANGLE_KEYS = ['lKnee','rKnee','lElbow','rElbow','lShoulder','rShoulder','lHip','rHip'];
+  var LABELS = {lKnee:'L knee',rKnee:'R knee',lElbow:'L elbow',rElbow:'R elbow',
+    lShoulder:'L shoulder',rShoulder:'R shoulder',lHip:'L hip',rHip:'R hip'};
+  // MediaPipe landmark triples, ported from the Svarupa prototype.
+  var TRIPLES = { lKnee:[23,25,27], rKnee:[24,26,28], lElbow:[11,13,15], rElbow:[12,14,16],
+    lShoulder:[23,11,13], rShoulder:[24,12,14], lHip:[11,23,25], rHip:[12,24,26] };
+  var SKELETON = [[11,12],[11,13],[13,15],[12,14],[14,16],[11,23],[12,24],[23,24],
+    [23,25],[25,27],[24,26],[26,28],[27,29],[28,30],[29,31],[30,32]];
+
+  var video = document.getElementById('video'),
+      canvas = document.getElementById('overlay'),
+      ctx = canvas.getContext('2d'),
+      statusEl = document.getElementById('status'),
+      scoreEl = document.getElementById('score'),
+      anglesEl = document.getElementById('angles'),
+      timerEl = document.getElementById('timer'),
+      refSel = document.getElementById('refSel'),
+      camBtn = document.getElementById('camBtn'),
+      saveBtn = document.getElementById('saveBtn');
+
+  var references = {}, target = null, frames = [], startTime = null, timerId = null;
+
+  function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
+  function angleAt(a,b,c){
+    var v1x=a.x-b.x, v1y=a.y-b.y, v2x=c.x-b.x, v2y=c.y-b.y;
+    var m1=Math.hypot(v1x,v1y), m2=Math.hypot(v2x,v2y);
+    if(!m1||!m2) return 0;
+    return Math.acos(clamp((v1x*v2x+v1y*v2y)/(m1*m2),-1,1))*180/Math.PI;
+  }
+  function currentAngles(lm){
+    var out = {};
+    ANGLE_KEYS.forEach(function(k){
+      var t = TRIPLES[k];
+      out[k] = Math.round(angleAt(lm[t[0]], lm[t[1]], lm[t[2]])*10)/10;
+    });
+    return out;
+  }
+  // Exact mirror of the prototype's scoreAgainst: 8° tolerance, 55° scale.
+  function scoreAgainst(cur, tgt){
+    var sum=0, devs={};
+    ANGLE_KEYS.forEach(function(k){
+      var d=Math.abs(cur[k]-tgt[k]); devs[k]=Math.round(d*10)/10;
+      sum += clamp(1-Math.max(0,d-8)/55, 0, 1);
+    });
+    return { score: Math.round(sum/ANGLE_KEYS.length*100), devs: devs };
+  }
+
+  function setStatus(t){ statusEl.textContent = t; }
+
+  // ---- reference library ----
+  fetch('/api/references?size=50').then(function(r){ return r.json(); }).then(function(page){
+    var items = page.content || [];
+    refSel.innerHTML = '';
+    if(!items.length){ refSel.innerHTML = '<option value="">No references yet</option>'; return; }
+    items.forEach(function(it){
+      var o = document.createElement('option');
+      o.value = it.id; o.textContent = it.title + ' (' + it.danceForm + ')';
+      refSel.appendChild(o);
+      references[it.id] = it;
+    });
+    target = references[refSel.value].jointAngles;
+    setStatus('Reference loaded. Enable the camera to begin.');
+  }).catch(function(){ refSel.innerHTML='<option value="">Library unavailable</option>'; });
+  refSel.addEventListener('change', function(){
+    var it = references[refSel.value];
+    if(it){ target = it.jointAngles; setStatus('Reference: ' + it.title); }
+  });
+
+  // ---- pose engine ----
+  var pose = null;
+  try {
+    pose = new Pose({ locateFile: function(f){
+      return 'https://cdn.jsdelivr.net/npm/@mediapipe/pose/' + f; } });
+    pose.setOptions({ modelComplexity:1, smoothLandmarks:true,
+      minDetectionConfidence:0.5, minTrackingConfidence:0.5 });
+    pose.onResults(onResults);
+  } catch(e){ setStatus('Pose engine failed to load.'); }
+
+  function onResults(res){
+    var w = video.videoWidth, h = video.videoHeight;
+    if(w && (canvas.width!==w || canvas.height!==h)){ canvas.width=w; canvas.height=h; }
+    ctx.save(); ctx.clearRect(0,0,canvas.width,canvas.height);
+    var lm = res.poseLandmarks;
+    if(lm){
+      ctx.strokeStyle = '#e8b64c'; ctx.lineWidth = 3; ctx.lineCap='round';
+      SKELETON.forEach(function(p){
+        var a=lm[p[0]], b=lm[p[1]];
+        ctx.beginPath(); ctx.moveTo(a.x*canvas.width, a.y*canvas.height);
+        ctx.lineTo(b.x*canvas.width, b.y*canvas.height); ctx.stroke();
+      });
+      ctx.fillStyle = '#f2ecdf';
+      lm.forEach(function(p){ ctx.beginPath();
+        ctx.arc(p.x*canvas.width, p.y*canvas.height, 4, 0, 6.283); ctx.fill(); });
+      var cur = currentAngles(lm);
+      frames.push(cur); if(frames.length>90) frames.shift();
+      renderAngles(cur);
+      if(target){
+        var s = scoreAgainst(cur, target);
+        scoreEl.textContent = s.score + '%';
+      }
+    } else {
+      scoreEl.textContent = '–';
+    }
+    ctx.restore();
+  }
+
+  function renderAngles(cur){
+    var html = '';
+    if(target){
+      var s = scoreAgainst(cur, target);
+      ANGLE_KEYS.forEach(function(k){
+        var d = s.devs[k], cls = d<=8?'joint-ok':(d<=20?'joint-warn':'joint-bad');
+        html += '<span class="'+cls+'"><b>'+LABELS[k]+'</b> '+cur[k]+'° (Δ'+d+'°)</span><br>';
+      });
+    } else {
+      ANGLE_KEYS.forEach(function(k){ html += '<b>'+LABELS[k]+'</b> '+cur[k]+'°<br>'; });
+    }
+    anglesEl.innerHTML = html;
+  }
+
+  // ---- camera ----
+  camBtn.addEventListener('click', function(){
+    setStatus('Requesting camera…');
+    navigator.mediaDevices.getUserMedia({ video:{ width:1280, facingMode:'user' }, audio:false })
+      .then(function(stream){
+        video.srcObject = stream;
+        return video.play();
+      })
+      .then(function(){
+        camBtn.disabled = true; saveBtn.disabled = false;
+        startTime = Date.now(); frames = [];
+        setStatus('Tracking — mirror the reference pose.');
+        timerId = setInterval(function(){
+          var s = Math.floor((Date.now()-startTime)/1000);
+          timerEl.textContent = Math.floor(s/60)+':'+String(s%60).padStart(2,'0');
+        }, 1000);
+        (function loop(){
+          if(video.readyState>=2){ try{ pose.send({image:video}); }catch(e){} }
+          requestAnimationFrame(loop);
+        })();
+      })
+      .catch(function(){ setStatus('Camera blocked — allow access and retry.'); });
+  });
+
+  // ---- save session ----
+  saveBtn.addEventListener('click', function(){
+    if(!refSel.value){ setStatus('Pick a reference step first.'); return; }
+    var jwt = localStorage.getItem('svarupa_jwt');
+    if(!jwt){ setStatus('Sign in on the main site first — session not saved.'); return; }
+    if(!frames.length){ setStatus('No tracked frames yet.'); return; }
+    var avg = {}, n = frames.length;
+    ANGLE_KEYS.forEach(function(k){
+      var sum=0; frames.forEach(function(f){ sum+=f[k]; });
+      avg[k]=Math.round(sum/n*10)/10;
+    });
+    var body = {
+      referenceStepId: refSel.value,
+      finalAngles: avg,
+      startedAt: new Date(startTime).toISOString(),
+      durationSeconds: Math.floor((Date.now()-startTime)/1000),
+      frameCount: n
+    };
+    setStatus('Saving session…'); saveBtn.disabled = true;
+    fetch('/api/sessions', { method:'POST',
+      headers:{ 'Content-Type':'application/json', 'Authorization':'Bearer '+jwt },
+      body: JSON.stringify(body) })
+      .then(function(r){ return r.json().then(function(j){ return {ok:r.ok, j:j}; }); })
+      .then(function(res){
+        if(res.ok){
+          setStatus('Saved! Match: '+res.j.overallMatchPct+'%. Corrections are on your Progress page.');
+          clearInterval(timerId); timerEl.textContent='0:00'; frames=[]; startTime=Date.now();
+        } else {
+          setStatus('Save failed: '+(res.j.message||res.j.error||'unknown'));
+        }
+        saveBtn.disabled = false;
+      })
+      .catch(function(){ setStatus('Save failed — network error.'); saveBtn.disabled=false; });
+  });
+})();
+</script>
+</body>
+</html>
